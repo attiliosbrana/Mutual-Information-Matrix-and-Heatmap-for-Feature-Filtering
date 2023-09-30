@@ -2,6 +2,8 @@ import warnings
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import gzip
+import struct
 from sklearn.metrics import normalized_mutual_info_score
 from matplotlib.colors import LinearSegmentedColormap
 import mplcatppuccin
@@ -10,6 +12,65 @@ import seaborn as sns
 from matplotlib.patches import Rectangle
 
 warnings.filterwarnings("ignore", category=UserWarning)
+
+
+def norm_comp_gain(x, y):
+    """
+    Computes the Normalized Compression Gain (NCG) between two sequences x and y.
+
+    Steps:
+    1. Quantize the sequences and convert to bytes for compression.
+    2. Concatenate the byte sequences.
+    3. Compress the individual and concatenated byte sequences using gzip.
+    4. Calculate the actual compression gain.
+    5. Define the best and worst case scenarios for compression.
+    6. Normalize the gain by the difference between the worst and best case scenarios.
+    7. Clip the normalized gain to [0, 1].
+    8. Apply exponential scaling to accentuate the differences.
+    9. Return the exponentially scaled normalized compression gain.
+    """
+    # x_quantized = x.astype(np.float16)
+    # y_quantized = y.astype(np.float16)
+    # x_bytes = x_quantized.tobytes()
+    # y_bytes = y_quantized.tobytes()
+
+    x_quantized = (x * 10**3).astype(np.int8)
+    y_quantized = (y * 10**3).astype(np.int8)
+    x_bytes = x_quantized.tobytes()
+    y_bytes = y_quantized.tobytes()
+
+    # x_bytes = x.tostring()
+    # y_bytes = y.tostring()
+
+    xy_bytes = x_bytes + y_bytes
+
+    Cx = len(gzip.compress(x_bytes))
+    Cy = len(gzip.compress(y_bytes))
+    Cxy = len(gzip.compress(xy_bytes))
+
+    gain = (Cx + Cy) - Cxy  # Actual gain
+    worst_case = Cx + Cy  # Worst case scenario where there's no gain
+    best_case = min(Cx, Cy)  # Best case scenario where gain is maximized
+
+    # Avoid division by zero if worst_case equals best_case
+    if worst_case == best_case:
+        return 0.0
+
+    normalized_gain = gain / (worst_case - best_case)  # Normalize the gain
+
+    # Clip it to one or zero
+    if normalized_gain > 1.0:
+        normalized_gain = 1.0
+
+    if normalized_gain < 0.0:
+        normalized_gain = 0.0
+
+    # Apply exponential scaling
+    exp_scaled_gain = 1 - np.exp(
+        -10 * normalized_gain
+    )  # The factor 10 controls the rate of increase of the exponential function
+
+    return exp_scaled_gain
 
 
 def set_style():
@@ -40,7 +101,19 @@ def custom_colormap_nmi():
     )
 
 
-def plot_combined_heatmap(df, target, lags=[0, 1], k=16):
+def custom_colormap_ncg():
+    return LinearSegmentedColormap.from_list(
+        "ncg_colormap",
+        [
+            (0.0, "#1e1e2e40"),
+            (1.0, "#FE640B"),
+        ],
+    )
+
+
+def plot_combined_heatmap(
+    df, target, lags=[0, 1], k=16, upper_triangle="nmi", lower_triangle="corr"
+):
     set_style()
 
     # Identify and Encode Categorical Variables
@@ -59,61 +132,91 @@ def plot_combined_heatmap(df, target, lags=[0, 1], k=16):
     # Drop rows with NaN values created by the lagging process
     df.dropna(inplace=True)
 
-    # Calculate NMI scores between all features and the target
-    nmi_scores = {
-        col: normalized_mutual_info_score(df[col], df[target])
-        for col in df.columns
+    def get_metric_function(metric):
+        if metric == "corr":
+            return lambda x, y: np.corrcoef(df[x], df[y])[0, 1]
+        elif metric == "nmi":
+            return lambda x, y: normalized_mutual_info_score(df[x], df[y])
+        elif metric == "ncg":
+            return lambda x, y: norm_comp_gain(df[x].to_numpy(), df[y].to_numpy())
+        else:
+            raise ValueError(f"Unknown metric: {metric}")
+
+    def compute_matrix(metric):
+        metric_function = get_metric_function(metric)
+        matrix = np.zeros((len(df.columns), len(df.columns)))
+        for i, col1 in enumerate(df.columns):
+            for j, col2 in enumerate(df.columns):
+                matrix[i, j] = metric_function(col1, col2)
+        return matrix
+
+    # Compute the upper triangle matrix to sort features based on the metric with respect to the target variable
+    upper_triangle_matrix = compute_matrix(upper_triangle)
+    target_index = df.columns.get_loc(target)
+    upper_triangle_scores = {
+        col: upper_triangle_matrix[target_index, i]
+        for i, col in enumerate(df.columns)
         if col != target
     }
-
-    # Sort features by NMI scores in descending order
-    sorted_columns_by_nmi = sorted(
-        nmi_scores.keys(), key=lambda x: nmi_scores[x], reverse=True
+    sorted_columns_by_upper_metric = sorted(
+        upper_triangle_scores.keys(),
+        key=lambda x: upper_triangle_scores[x],
+        reverse=True,
     )
 
     # Move the target variable and the sorted features to the beginning of the dataframe
-    df = df[[target] + sorted_columns_by_nmi]
-
-    # Find index of target variable
-    target_index = df.columns.get_loc(target)
+    df = df[[target] + sorted_columns_by_upper_metric]
 
     # Keep only the top k features
     df = df.iloc[:, : k + 1]
 
-    # Get the correlation matrix and NMI matrix
-    corr_matrix = df.corr()
-    nmi_matrix = np.zeros((len(df.columns), len(df.columns)))
-    for i, col1 in enumerate(df.columns):
-        for j, col2 in enumerate(df.columns):
-            nmi_matrix[i, j] = normalized_mutual_info_score(df[col1], df[col2])
+    lower_triangle_matrix = compute_matrix(lower_triangle)
+    upper_triangle_matrix = compute_matrix(upper_triangle)  # Recompute after sorting
 
-    # Create a new matrix where one half is the correlation matrix and the other half is the NMI matrix
-    combined_matrix = np.zeros((len(df.columns), len(df.columns)))
-    for i in range(len(df.columns)):
-        for j in range(len(df.columns)):
-            if i > j:
-                combined_matrix[i, j] = corr_matrix.iloc[i, j]
-            else:
-                combined_matrix[i, j] = nmi_matrix[i, j]
+    mask_lower = np.triu(np.ones_like(lower_triangle_matrix, dtype=bool))
+    mask_upper = np.tril(np.ones_like(upper_triangle_matrix, dtype=bool))
 
-    mask_lower = np.triu(np.ones_like(combined_matrix, dtype=bool))
-    mask_upper = np.tril(np.ones_like(combined_matrix, dtype=bool))
+    # Define a dictionary to map metric names to labels
+    metric_labels = {
+        "corr": "Correlation Coefficient",
+        "nmi": "Normalized Mutual Information",
+        "ncg": "Normalized Compression Gain",
+    }
+
+    # Look up the label for the upper triangle metric
+    upper_triangle_label = metric_labels.get(upper_triangle)
+    lower_triangle_label = metric_labels.get(lower_triangle)
+
+    # Define a dictionary to map metric names to colormaps
+    metric_colormaps = {
+        "corr": custom_colormap_corr,
+        "nmi": custom_colormap_nmi,
+        "ncg": custom_colormap_ncg,
+    }
+
+    # Look up the colormap for the upper and lower triangle metrics
+    upper_triangle_colormap = metric_colormaps.get(
+        upper_triangle, custom_colormap_nmi
+    )()
+    lower_triangle_colormap = metric_colormaps.get(
+        lower_triangle, custom_colormap_corr
+    )()
 
     plt.figure(figsize=(14, 12))
 
     # Plot lower triangle
     ax_lower = sns.heatmap(
-        combined_matrix,
+        lower_triangle_matrix,
         mask=mask_lower,
-        cmap=custom_colormap_corr(),
+        cmap=lower_triangle_colormap,
         annot=True,
         fmt=".2f",
         linewidths=1,
         linecolor="white",
         square=True,
         annot_kws={"size": 12},
-        cbar_kws={"label": "Correlation Coefficient"},
-        vmin=-1,  # Setting minimum value for scaling
+        cbar_kws={"label": lower_triangle_label},
+        vmin=-1 if lower_triangle == "corr" else 0,  # Adjust vmin based on metric
         vmax=1,  # Setting maximum value for scaling
     )
 
@@ -124,16 +227,16 @@ def plot_combined_heatmap(df, target, lags=[0, 1], k=16):
 
     # Plot upper triangle
     ax_upper = sns.heatmap(
-        combined_matrix,
+        upper_triangle_matrix,
         mask=mask_upper,
-        cmap=custom_colormap_nmi(),
+        cmap=upper_triangle_colormap,
         annot=True,
         fmt=".2f",
         linewidths=1,
         linecolor="white",
         square=True,
         annot_kws={"size": 12},
-        cbar_kws={"label": "Normalized Mutual Information"},
+        cbar_kws={"label": upper_triangle_label},
         vmin=0,  # Setting minimum value for scaling
         vmax=1,  # Setting maximum value for scaling
     )
@@ -145,6 +248,7 @@ def plot_combined_heatmap(df, target, lags=[0, 1], k=16):
 
     # Adding a lighter border to the target variable's row and column
     light_red = "#d20f39"
+    target_index = 0  # Target variable is now the first column
     ax_lower.add_patch(
         Rectangle(
             (0, target_index), len(df.columns), 1, fill=False, edgecolor=light_red, lw=2
@@ -152,35 +256,12 @@ def plot_combined_heatmap(df, target, lags=[0, 1], k=16):
     )
     ax_lower.add_patch(
         Rectangle(
-            (0, target_index - 1),
-            len(df.columns),
-            1,
-            fill=False,
-            edgecolor=light_red,
-            lw=2,
-        )
-    )
-    ax_lower.add_patch(
-        Rectangle(
             (target_index, 0), 1, len(df.columns), fill=False, edgecolor=light_red, lw=2
-        )
-    )
-    ax_lower.add_patch(
-        Rectangle(
-            (target_index - 1, 0),
-            1,
-            len(df.columns),
-            fill=False,
-            edgecolor=light_red,
-            lw=2,
         )
     )
 
     plt.xticks(np.arange(len(df.columns)) + 0.5, df.columns, rotation=90, fontsize=14)
     plt.yticks(np.arange(len(df.columns)) + 0.5, df.columns, rotation=0, fontsize=14)
-
-    # Find the index of the target variable in the column list
-    target_index = list(df.columns).index(target)
 
     # Get the tick labels objects
     xticklabels = ax_lower.get_xticklabels()
@@ -194,6 +275,6 @@ def plot_combined_heatmap(df, target, lags=[0, 1], k=16):
     ax_lower.set_xticklabels(xticklabels)
     ax_lower.set_yticklabels(yticklabels)
 
-    plt.title("Combined Correlation and NMI Heatmap", fontsize=20)
+    plt.title("Combined Heatmap", fontsize=20)
 
     plt.show()

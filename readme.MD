@@ -4,7 +4,7 @@
 
 This project showcases a tool designed to facilitate enhanced feature filtering techniques grounded in information theory. By utilizing a mock dataset, found in marketing_causality.csv, which simulates the dynamics of marketing spending in various channels versus the number of new users acquired, we demonstrate the functionalities of the tool in a controlled environment.
 
-The central feature of this project is a mutual information matrix heatmap that represents both mutual information and correlation coefficients - mutual information in the upper triangle and correlation coefficients in the lower triangle. This representation aims to underscore the limitations of traditional correlation metrics for feature filtering tasks and exhibit how mutual information can provide a more nuanced understanding.
+The central feature of this project is a mutual information matrix heatmap that represents various information theoretic metrics - mutual information, normalized compression gain in the upper triangle, and correlation coefficients in the lower triangle. This representation aims to underscore the limitations of traditional correlation metrics for feature filtering tasks and exhibit how mutual information and normalized compression gain can provide a more nuanced understanding.
 
 This tool also offers the ability to automatically transform categorical features and incorporate continuous variables with specified lags, further aiding in detailed analysis. The visualization is streamlined, focusing only on the 'k' most pertinent variables in terms of mutual information against the selected variable, thereby offering clarity and precision in the representation.
 
@@ -15,7 +15,8 @@ This tool also offers the ability to automatically transform categorical feature
 1. **Automated Transformation of Categorical Features**: The script automatically identifies and transforms categorical features into a format suitable for analysis.
 2. **Support for Lagged Variables**: The ability to include lagged variables specified by a list of lags to analyse the time-delayed effects.
 3. **Top K Features Selection**: Automatically selects the top K most important variables based on their mutual information with the target variable.
-4. **Heatmap Visualization**: Generates a heatmap where the top diagonal represents mutual information and the bottom diagonal represents the correlation matrix.
+4. **Normalized Compression Gain Calculation**: The tool can now compute the normalized compression gain between two variables, providing insights into the redundancy and synergy between features.
+5. **Heatmap Visualization**: Generates a heatmap where the upper diagonal represents mutual information or normalized compression gain and the bottom diagonal represents the correlation matrix.
 
 ## Getting Started
 
